@@ -797,6 +797,12 @@ func (s *Server) instanceForRecord(rec *ScanRecord) *ScanInstance {
 }
 
 func (s *Server) applyInstanceSnapshot(rec *ScanRecord, includeEvents bool) {
+	// Child records share their coordinator's instance ID, but retain their
+	// own evidence, usage, plan, and outcome. The instance aggregates the
+	// entire queue and cannot supply a child-scoped snapshot.
+	if rec == nil || rec.ParentTarget != "" {
+		return
+	}
 	inst := s.instanceForRecord(rec)
 	if inst == nil {
 		return
