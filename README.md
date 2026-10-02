@@ -533,6 +533,8 @@ View logs:
 journalctl -u xalgorix -f
 ```
 
+For quiet discovery or a paused scan, see [diagnosing scan waits](docs/SCAN_WAITS.md).
+
 ### 🌍 Remote Service Access
 
 Expose the service to remote browsers only after enabling dashboard auth:

@@ -1891,17 +1891,14 @@ func (a *Agent) Run(targets []string, instruction string) {
 				}
 				a.state.ConsecutiveRateLimits++
 
-				var abortReason, reasonLabel string
+				var abortReason string
 				switch classified.Class {
 				case llm.ErrorClassOverloaded:
 					abortReason = "provider_overloaded"
-					reasonLabel = "overload"
 				case llm.ErrorClassQuotaExhausted:
 					abortReason = "provider_quota_exhausted"
-					reasonLabel = "quota wait"
 				default:
 					abortReason = "provider_rate_limited"
-					reasonLabel = "rate-limit"
 				}
 
 				// Progressive retry backoff: 15s -> 30s -> 60s max per attempt.
@@ -1912,8 +1909,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 
 				maxWait := a.maxRateLimitWait()
 				if maxWait > 0 && a.state.CumulativeRateLimitWait >= maxWait {
-					log.Printf("[agent:%s] LLM %s wait budget exhausted after %s", a.ID, reasonLabel, a.state.CumulativeRateLimitWait)
-					a.emit(Event{Type: "paused", Content: "Scan paused: upstream provider temporarily unavailable; existing findings preserved.", TotalTokens: tokenCount(), Aborted: true, AbortReason: abortReason})
+					a.pauseForProviderWait(err, abortReason, maxWait, tokenCount())
 					return
 				}
 
@@ -1921,8 +1917,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				if maxWait > 0 {
 					remaining := maxWait - a.state.CumulativeRateLimitWait
 					if remaining <= 0 {
-						log.Printf("[agent:%s] LLM %s wait budget exhausted", a.ID, reasonLabel)
-						a.emit(Event{Type: "paused", Content: "Scan paused: upstream provider temporarily unavailable; existing findings preserved.", TotalTokens: tokenCount(), Aborted: true, AbortReason: abortReason})
+						a.pauseForProviderWait(err, abortReason, maxWait, tokenCount())
 						return
 					}
 					if remaining < backoff {
@@ -1931,8 +1926,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				}
 
 				// Log strictly to backend server logs for operator visibility (silent on user frontend)
-				log.Printf("[agent:%s] Upstream LLM %s encountered (%s). Waiting %s before retry (attempt %d, cumulative wait: %s)...",
-					a.ID, reasonLabel, classified.Class, backoff, a.state.ConsecutiveRateLimits, a.state.CumulativeRateLimitWait.Round(time.Second))
+				a.logProviderWait(err, backoff, maxWait)
 
 				// Interruptible sleep: bail out immediately if the scan is stopped or canceled by operator.
 				if a.ctx != nil {
@@ -1954,8 +1948,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				a.touchActivity() // keep watchdog alive during rate-limit/quota backoff
 
 				if maxWait > 0 && a.state.CumulativeRateLimitWait >= maxWait {
-					log.Printf("[agent:%s] LLM %s wait budget exhausted after %s", a.ID, reasonLabel, a.state.CumulativeRateLimitWait)
-					a.emit(Event{Type: "paused", Content: "Scan paused: upstream provider temporarily unavailable; existing findings preserved.", TotalTokens: tokenCount(), Aborted: true, AbortReason: abortReason})
+					a.pauseForProviderWait(err, abortReason, maxWait, tokenCount())
 					return
 				}
 				continue
@@ -2218,6 +2211,10 @@ func (a *Agent) Run(targets []string, instruction string) {
 			continue
 		}
 		// Non-empty response with tool calls = healthy. Reset all error counters.
+		if a.state.ConsecutiveRateLimits > 0 {
+			log.Printf("[agent:%s] Upstream LLM recovered: wait_attempts=%d cumulative_wait=%s; continuing assessment",
+				a.ID, a.state.ConsecutiveRateLimits, a.state.CumulativeRateLimitWait)
+		}
 		a.hooks.Fire(OnHealthyResponse, a.state, nil)
 
 		for _, tc := range toolCalls {

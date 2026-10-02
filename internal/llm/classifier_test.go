@@ -38,7 +38,7 @@ func TestClassifyError(t *testing.T) {
 		{
 			name:      "Google Gemini Resource Exhausted Rate Limit",
 			rawErr:    `API returned 429: {"error": {"code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED"}}`,
-			wantClass: ErrorClassQuotaExhausted,
+			wantClass: ErrorClassRateLimit,
 		},
 		{
 			name:      "Context Window Overflow",
