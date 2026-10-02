@@ -64,11 +64,9 @@ func ClassifyErrorString(rawErr string) ClassifiedError {
 		strings.Contains(errStr, "out of credits") ||
 		strings.Contains(errStr, "billing account") ||
 		strings.Contains(errStr, "payment required") ||
-		strings.Contains(errStr, "http 402") ||
-		strings.Contains(errStr, "api returned 402") ||
+		apiErrorHasStatus(errStr, 402) ||
 		strings.Contains(errStr, "usage limit reached") ||
-		strings.Contains(errStr, "plan limit exceeded") ||
-		(strings.Contains(errStr, "resource_exhausted") && strings.Contains(errStr, "quota")) {
+		strings.Contains(errStr, "plan limit exceeded") {
 		return ClassifiedError{
 			Class:   ErrorClassQuotaExhausted,
 			Message: "LLM provider quota or credit balance exhausted (check account billing)",
@@ -77,7 +75,6 @@ func ClassifyErrorString(rawErr string) ClassifiedError {
 
 	// 3. Provider Overloaded (HTTP 529 or overloaded message)
 	if apiErrorHasStatus(errStr, 529) ||
-		strings.Contains(errStr, "529") ||
 		strings.Contains(errStr, "overloaded_error") ||
 		strings.Contains(errStr, "engine is currently overloaded") ||
 		strings.Contains(errStr, "temporarily overloaded") ||

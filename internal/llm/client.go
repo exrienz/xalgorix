@@ -813,10 +813,7 @@ func (c *Client) ollamaReasoningEffort(endpoint string) string {
 }
 
 func apiErrorHasStatus(errStr string, status int) bool {
-	errStr = strings.ToLower(errStr)
-	statusText := fmt.Sprintf("%d", status)
-	return strings.Contains(errStr, "api returned "+statusText) ||
-		strings.Contains(errStr, "http "+statusText)
+	return responseErrorStatus(errStr) == status
 }
 
 func isContextWindowError(errStr string) bool {
@@ -1201,7 +1198,7 @@ func (c *Client) chatWithRetry(messages []Message) (string, *TokenUsage, error) 
 			if backoff > 60*time.Second {
 				backoff = 60 * time.Second
 			}
-			log.Printf("[llm] Retry %d/%d after %s (last error: %v)", attempt+1, maxRetries, backoff, lastErr)
+			log.Printf("[llm] Retry %d/%d after %s (%s)", attempt+1, maxRetries, backoff, SafeErrorDiagnostic(lastErr))
 			select {
 			case <-c.loadCtx().Done():
 				return "", nil, fmt.Errorf("LLM request canceled: %w", c.loadCtx().Err())
@@ -1244,6 +1241,13 @@ func (c *Client) chatWithRetry(messages []Message) (string, *TokenUsage, error) 
 		if isContextWindowError(errStr) {
 			log.Printf("[llm] Non-retryable error (context overflow), returning immediately: %v", err)
 			return "", nil, fmt.Errorf("context window overflow: %w", err)
+		}
+
+		// Capacity and credit waits belong to the agent's bounded backoff,
+		// just like rate limits. Avoid replaying a full request inside both loops.
+		classified := ClassifyErrorString(errStr)
+		if classified.Class == ErrorClassOverloaded || classified.Class == ErrorClassQuotaExhausted {
+			return "", nil, fmt.Errorf("upstream unavailable: %w", err)
 		}
 
 		if isNonRetryableLLMError(errStr) {
