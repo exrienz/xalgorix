@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
@@ -65,6 +66,8 @@ var (
 )
 
 type browserStore struct {
+	actionMu        sync.Mutex
+	transport       *browserTransport
 	mu              sync.Mutex
 	browser         *rod.Browser
 	browserLauncher *launcher.Launcher
@@ -177,14 +180,24 @@ func GetBrowserForCtx(ctxID string) *rod.Browser {
 // CleanupContext closes the browser and removes the store for a deactivated context.
 // This kills the underlying Chromium process to prevent orphaned processes.
 func CleanupContext(contextID string) {
-	browserStoresMu.Lock()
-	defer browserStoresMu.Unlock()
-	if s, ok := browserStores[contextID]; ok {
-		s.mu.Lock()
-		cleanupBrowserLocked(contextID, s)
-		s.mu.Unlock()
-		delete(browserStores, contextID)
+	browserStoresMu.RLock()
+	s := browserStores[contextID]
+	browserStoresMu.RUnlock()
+	if s == nil {
+		return
 	}
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	browserStoresMu.Lock()
+	if browserStores[contextID] != s {
+		browserStoresMu.Unlock()
+		return
+	}
+	delete(browserStores, contextID)
+	browserStoresMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cleanupBrowserLocked(contextID, s)
 }
 
 // Register adds browser tools to the registry.
@@ -556,12 +569,20 @@ func ensureBrowser(ctxID, proxy string) error {
 		log.Printf("[browser] Skipping process-limit apply: launcher reported pid=0")
 	}
 
-	br := rod.New().ControlURL(u)
+	browserCtx := browserWaitContext(ctxID)
+	client, err := cdp.StartWithURL(browserCtx, u, nil)
+	if err != nil {
+		ln.Kill()
+		return fmt.Errorf("connect browser: %w", err)
+	}
+	transport := &browserTransport{CDPClient: client}
+	br := rod.New().Context(browserCtx).Client(transport)
 	if err := br.Connect(); err != nil {
 		ln.Kill()
 		return fmt.Errorf("connect browser: %w", err)
 	}
 
+	s.transport = transport
 	s.browser = br
 	s.browserLauncher = ln
 	s.requiredProxy = requiredProxy
@@ -652,6 +673,12 @@ func browserActionForRegistry(reg *tools.Registry, args map[string]string) (tool
 }
 
 func browserActionWithContext(ctxID string, args map[string]string) (tools.Result, error) {
+	return withBrowserTransportRecovery(ctxID, func() (tools.Result, error) {
+		return dispatchBrowserAction(ctxID, args)
+	})
+}
+
+func dispatchBrowserAction(ctxID string, args map[string]string) (tools.Result, error) {
 	command := strings.TrimSpace(args["command"])
 	if command == "" {
 		// Some providers intermittently omit the command key while still
@@ -1721,22 +1748,24 @@ func closeBrowser(ctxID string) (tools.Result, error) {
 
 // cleanupBrowserLocked closes browser resources (must hold s.mu).
 func cleanupBrowserLocked(ctxID string, s *browserStore) {
-	closed := false
 	s.savedSessions = make(map[string][]*proto.NetworkCookie)
+	resetBrowserConnectionLocked(ctxID, s)
+}
+
+// resetBrowserConnectionLocked releases live resources while retaining saved
+// authentication sessions and their persistence directory. The caller holds s.mu.
+func resetBrowserConnectionLocked(ctxID string, s *browserStore) {
+	closed := false
 	if s.browser != nil {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[browser] cleanupBrowserLocked: MustClose recovered: %v", r)
-				}
-			}()
-			s.browser.MustClose()
-			closed = true
-		}()
-		s.browser = nil
-		s.page = nil
-		s.pages = make(map[string]*rod.Page)
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		closed = s.browser.Context(closeCtx).Close() == nil
 	}
+	s.browser = nil
+	s.transport = nil
+	s.page = nil
+	s.pages = make(map[string]*rod.Page)
+	s.currentTab = ""
 	if !closed && s.browserLauncher != nil {
 		s.browserLauncher.Kill()
 	}
@@ -1762,7 +1791,8 @@ func cleanupBrowserLocked(ctxID string, s *browserStore) {
 // Called between scan phases and on agent stop to prevent stale connection usage.
 func CleanupBrowser() {
 	ctxID := scanctx.Default().ID
-	s := getBrowserStoreByID(ctxID)
+	s := lockBrowserAction(ctxID)
+	defer s.actionMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cleanupBrowserLocked(ctxID, s)
