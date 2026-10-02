@@ -12,6 +12,12 @@ import (
 )
 
 func discoverClientRoutesAtURL(ctxID, rawURL, proxy string) (tools.Result, error) {
+	return withBrowserTransportRecovery(ctxID, func() (tools.Result, error) {
+		return discoverClientRoutesAtURLAction(ctxID, rawURL, proxy)
+	})
+}
+
+func discoverClientRoutesAtURLAction(ctxID, rawURL, proxy string) (tools.Result, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return tools.Result{Error: "discover_client_routes requires an absolute HTTP(S) page URL"}, nil
