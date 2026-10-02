@@ -645,7 +645,7 @@ func (s *Server) processEvent(evt agent.Event, sess *scanSession) {
 					// record instead of accumulating the stale candidate
 					// next to the upgrade.
 					if metadataBool(evt.ToolResult.Metadata, "upgraded") {
-						removeVulnSummariesByID(&sess.record.Vulns, vulnID)
+						applySummaryReplacement(&sess.record.Vulns, &vs, true)
 					}
 					log.Printf("[VULN] Latest vuln: %s %s (CVSS %.1f)", vs.Severity, vs.Title, vs.CVSS)
 
@@ -1274,6 +1274,7 @@ func (s *Server) finalizeScanSessionRecord(sess *scanSession) bool {
 	s.capturePlanDisposition(sess)
 	sess.record.Status = "finished"
 	sess.record.FinishedAt = time.Now().Format(time.RFC3339)
+	s.mirrorScanIntegrity(sess.instanceID, sess.record)
 
 	// NOTE: merges are deferred to sess.cleanup() under safe.Recover boundaries
 	// to guarantee panic-safe persistence.
