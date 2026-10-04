@@ -304,8 +304,7 @@ func (a *Agent) updatePlanTool(args map[string]string) (tools.Result, error) {
 	if st == TaskSkipped && t.Origin == "auto" && t.VulnClass != "" {
 		if notes == "" {
 			return tools.Result{Error: fmt.Sprintf(
-				"task %q (%s) cannot be skipped without a justification note. Use a typed status (not_applicable, blocked_missing_auth, blocked_missing_second_identity, blocked_unreachable, blocked_policy, exhausted, superseded) and state the concrete surface fact (for example: 'no XML input surface exists'); otherwise test it.",
-				id, t.VulnClass)}, nil
+				"task %q (%s)%s", id, t.VulnClass, planSkipNoteGuidance)}, nil
 		}
 		if isVagueDispositionReason(notes) {
 			return tools.Result{Error: fmt.Sprintf(
