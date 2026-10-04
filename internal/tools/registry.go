@@ -447,6 +447,12 @@ func (r *Registry) SchemaHiddenNames() []string {
 
 // textEscape escapes characters that are unsafe in XML text nodes.
 func textEscape(s string) string {
+	escaped := xmlEscape(s)
+	// Quotes are safe in text nodes and need no entity encoding.
+	return strings.ReplaceAll(strings.ReplaceAll(escaped, "&#34;", "\""), "&#39;", "'")
+}
+
+func xmlEscape(s string) string {
 	var buf bytes.Buffer
 	if err := xml.EscapeText(&buf, []byte(s)); err != nil {
 		// EscapeText only fails on the io.Writer; we use bytes.Buffer.
@@ -458,5 +464,5 @@ func textEscape(s string) string {
 // attrEscape escapes characters that are unsafe in XML attribute values.
 func attrEscape(s string) string {
 	// xml.EscapeText handles attribute-safe escaping for &, <, >, " and '.
-	return textEscape(s)
+	return xmlEscape(s)
 }
