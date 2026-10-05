@@ -279,6 +279,39 @@ func TestParseBytes_UnknownReturnsNil(t *testing.T) {
 	}
 }
 
+func TestParseBytes_EndpointList(t *testing.T) {
+	data := []byte("# target routes\nGET /openapi/check?id=1&expand=true\nPOST https://example.com/api/users\nhttps://example.com/health\nGET /users/{id}\n")
+	res := ParseBytes(data, "endpoints.txt")
+	if res == nil {
+		t.Fatal("expected endpoint list to parse")
+	}
+	res.finalize()
+	if len(res.Endpoints) != 4 || !contains(res.Formats, "endpoint-list") {
+		t.Fatalf("unexpected endpoint list result: %+v", res)
+	}
+	if e := findEndpoint(res, "GET", "/openapi/check"); e == nil ||
+		e.Path != "/openapi/check" || !contains(e.Params, "id") || !contains(e.Params, "expand") {
+		t.Fatalf("missing route or query parameters: %+v", res.Endpoints)
+	}
+	if findEndpoint(res, "POST", "https://example.com/api/users") == nil ||
+		findEndpoint(res, "", "https://example.com/health") == nil ||
+		findEndpoint(res, "GET", "/users/{id}") == nil {
+		t.Fatalf("missing absolute URL endpoints: %+v", res.Endpoints)
+	}
+}
+
+func TestParseBytes_EndpointListRejectsProseAndUnsafeURLs(t *testing.T) {
+	for _, input := range []string{
+		"Scanner notes reference https://example.com/api/users, but no routes are listed.",
+		"GET /valid\nThis is explanatory prose.",
+		"https://user:password@example.com/private",
+	} {
+		if res := ParseBytes([]byte(input), "notes.txt"); res != nil {
+			t.Fatalf("unexpected parsed endpoint from %q: %+v", input, res)
+		}
+	}
+}
+
 func TestLoadFromPath_Directory(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.json"), []byte(`{"openapi":"3.0.0","paths":{"/x":{"get":{}}}}`), 0o644)

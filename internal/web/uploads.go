@@ -3,6 +3,7 @@ package web
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -264,7 +265,11 @@ func (s *Server) handleUploadContext(w http.ResponseWriter, r *http.Request) {
 	res, perr := attacksurface.LoadFromPath(uploadDir)
 	if perr != nil {
 		_ = os.RemoveAll(uploadDir)
-		http.Error(w, "could not parse context: "+perr.Error(), http.StatusBadRequest)
+		if errors.Is(perr, attacksurface.ErrNoUsableContext) {
+			http.Error(w, "could not parse context: no usable endpoints, auth, or base URL found; for .txt use one URL or METHOD /path per line", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "could not parse context: invalid or unreadable artifact", http.StatusBadRequest)
 		return
 	}
 	log.Printf("Scan context uploaded: %d file(s) [%s] → %s (%d endpoints)", len(savedNames), strings.Join(savedNames, ", "), uploadDir, len(res.Endpoints))
