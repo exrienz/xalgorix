@@ -12,10 +12,12 @@ package attacksurface
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -54,6 +56,9 @@ const (
 	maxEndpoints = 500
 	maxBodyChars = 400
 )
+
+// ErrNoUsableContext means an artifact contained no supported attack surface.
+var ErrNoUsableContext = errors.New("no usable endpoints, auth, or base URLs found")
 
 // authHeaderNames are request headers we treat as authentication material worth
 // reusing for the scan (case-insensitive match, exact or by suffix/keyword).
@@ -143,7 +148,7 @@ func LoadFromPath(path string) (*Result, error) {
 	// runtime), and those hosts still seed the attack surface. Only fail when
 	// nothing at all was recovered.
 	if len(merged.Endpoints) == 0 && len(merged.AuthHeaders) == 0 && len(merged.BaseURLs) == 0 {
-		return merged, fmt.Errorf("no usable endpoints or auth found in %q", path)
+		return merged, fmt.Errorf("%w in %q", ErrNoUsableContext, path)
 	}
 	return merged, nil
 }
@@ -191,7 +196,12 @@ func parseBytes(data []byte, name string, postmanVars map[string]string) *Result
 	}
 	// Otherwise assume an OpenAPI/Swagger YAML spec.
 	if strings.Contains(trimmed, "openapi") || strings.Contains(trimmed, "swagger") || strings.Contains(trimmed, "paths:") {
-		return parseOpenAPIYAML(data)
+		if r := parseOpenAPIYAML(data); r != nil {
+			return r
+		}
+	}
+	if strings.EqualFold(filepath.Ext(name), ".txt") {
+		return parseEndpointList(trimmed)
 	}
 	return nil
 }
@@ -251,6 +261,63 @@ func parseOpenAPIYAML(data []byte) *Result {
 var httpMethods = map[string]bool{
 	"get": true, "post": true, "put": true, "delete": true,
 	"patch": true, "options": true, "head": true,
+}
+
+// parseEndpointList accepts a strict plain-text list, one URL or METHOD URL
+// per line. Paths beginning with / stay relative to the scan target. Reject
+// mixed prose instead of silently treating reference links as target routes.
+func parseEndpointList(text string) *Result {
+	res := &Result{AuthHeaders: map[string]string{}, Formats: []string{"endpoint-list"}}
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		method := ""
+		endpoint := ""
+		switch len(fields) {
+		case 1:
+			endpoint = fields[0]
+		case 2:
+			if !httpMethods[strings.ToLower(fields[0])] {
+				return nil
+			}
+			method = strings.ToUpper(fields[0])
+			endpoint = fields[1]
+		default:
+			return nil
+		}
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.User != nil || parsed.Fragment != "" {
+			return nil
+		}
+		if parsed.IsAbs() {
+			if (!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) || parsed.Hostname() == "" {
+				return nil
+			}
+		} else if !strings.HasPrefix(endpoint, "/") || strings.HasPrefix(endpoint, "//") || parsed.Host != "" {
+			return nil
+		}
+		params, err := url.ParseQuery(parsed.RawQuery)
+		if err != nil {
+			return nil
+		}
+		var names []string
+		for name := range params {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		res.Endpoints = append(res.Endpoints, Endpoint{
+			Method: method, Path: stripQuery(endpoint), Params: names, Source: "endpoint-list",
+		})
+	}
+	if scanner.Err() != nil || len(res.Endpoints) == 0 {
+		return nil
+	}
+	return res
 }
 
 func specToResult(spec *oasSpec) *Result {

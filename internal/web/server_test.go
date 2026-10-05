@@ -740,6 +740,34 @@ func TestUploadHandlers_ParseTargetsAndInstructions(t *testing.T) {
 	}
 }
 
+func TestUploadContext_EndpointListAndInvalidText(t *testing.T) {
+	s := newTestServer(t, nil)
+	body, contentType := multipartBody(t, "file", "endpoints.txt", "GET /api/users\nPOST https://example.com/api/users\n")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload-context", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+	s.handleUploadContext(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid endpoint list status = %d body=%q", rr.Code, rr.Body.String())
+	}
+	var uploaded struct {
+		Endpoints int `json:"endpoints"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &uploaded); err != nil || uploaded.Endpoints != 2 {
+		t.Fatalf("valid endpoint list response = %q err=%v", rr.Body.String(), err)
+	}
+
+	body, contentType = multipartBody(t, "file", "notes.txt", "Scanner notes reference https://example.com/api/users, but no routes are listed.")
+	req = httptest.NewRequest(http.MethodPost, "/api/upload-context", body)
+	req.Header.Set("Content-Type", contentType)
+	rr = httptest.NewRecorder()
+	s.handleUploadContext(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "one URL or METHOD /path per line") ||
+		strings.Contains(rr.Body.String(), s.dataDir) {
+		t.Fatalf("invalid context response = %d %q", rr.Code, rr.Body.String())
+	}
+}
+
 func multipartBody(t *testing.T, field, name, content string) (*bytes.Buffer, string) {
 	t.Helper()
 	var body bytes.Buffer
