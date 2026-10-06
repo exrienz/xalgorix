@@ -16,6 +16,18 @@ import (
 //go:embed data/*/*/*
 var embeddedSkills embed.FS
 
+// fs.Sub returns a distinct wrapper for each call. The skill-index cache uses
+// fs.FS as its key, so creating a wrapper during every skill lookup retains a
+// complete catalog index for each scan iteration. Reuse one wrapper for the
+// immutable embedded catalog across all agents and tool registrations.
+var embeddedSkillsDataFS = func() fs.FS {
+	subFS, err := fs.Sub(embeddedSkills, "data")
+	if err != nil {
+		return embeddedSkills
+	}
+	return subFS
+}()
+
 type loadedSkillRecord struct {
 	canonicalName string
 	contentHash   string // SHA-256 hex
@@ -42,11 +54,6 @@ func newAgentSkillState() *agentSkillState {
 
 // Register adds skill tools to the registry.
 func Register(r *tools.Registry, _ string) {
-	subFS, err := fs.Sub(embeddedSkills, "data")
-	if err != nil {
-		// Should not happen unless embed is empty
-		subFS = embeddedSkills
-	}
 	state := newAgentSkillState()
 	r.Register(&tools.Tool{
 		Name:        "read_skill",
@@ -55,7 +62,7 @@ func Register(r *tools.Registry, _ string) {
 			{Name: "name", Description: "Kebab-case skill name without extension (e.g., performing-memory-forensics-with-volatility3, analyzing-active-directory-acl-abuse). Use list_skills to discover names.", Required: true},
 			{Name: "category", Description: "Optional category to disambiguate (e.g., web-application-security, threat-hunting, reconnaissance). If omitted, all categories are searched.", Required: false},
 		},
-		Execute: makeReadSkillWithState(subFS, r, state),
+		Execute: makeReadSkillWithState(embeddedSkillsDataFS, r, state),
 	})
 
 	r.Register(&tools.Tool{
@@ -64,7 +71,7 @@ func Register(r *tools.Registry, _ string) {
 		Parameters: []tools.Parameter{
 			{Name: "category", Description: "Optional category filter (e.g., web-application-security, malware-analysis, reconnaissance). Omit to list all.", Required: false},
 		},
-		Execute: makeListSkillsWithState(subFS, r, state),
+		Execute: makeListSkillsWithState(embeddedSkillsDataFS, r, state),
 	})
 
 	r.Register(&tools.Tool{
@@ -75,7 +82,7 @@ func Register(r *tools.Registry, _ string) {
 			{Name: "category", Description: "Optional category filter (e.g., web-application-security, cloud-security).", Required: false},
 			{Name: "max", Description: "Max results to return (default 10, hard cap 25).", Required: false},
 		},
-		Execute: makeSearchSkills(subFS),
+		Execute: makeSearchSkills(embeddedSkillsDataFS),
 	})
 }
 
@@ -1655,11 +1662,7 @@ func ResolveSkillName(query string) (string, bool) {
 			return alias, true
 		}
 	}
-	subFS, err := fs.Sub(embeddedSkills, "data")
-	if err != nil {
-		subFS = embeddedSkills
-	}
-	return bestSkillMatch(subFS, q)
+	return bestSkillMatch(embeddedSkillsDataFS, q)
 }
 
 // bestSkillMatch runs the same lexical + intent scoring as search_skills and
