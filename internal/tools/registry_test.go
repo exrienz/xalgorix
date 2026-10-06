@@ -318,3 +318,14 @@ func TestRequiresParams(t *testing.T) {
 		t.Error("unknown tool → RequiresParams must be false")
 	}
 }
+
+func TestRecoveryToolIndexUsesVisibleToolsAndRequiredParameters(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&Tool{Name: "terminal_execute", Parameters: []Parameter{{Name: "command", Required: true}}})
+	r.Register(&Tool{Name: "read_notes"})
+	r.Register(&Tool{Name: "private_tool", Parameters: []Parameter{{Name: "secret", Required: true}}})
+	r.SetSchemaHidden([]string{"private_tool"})
+	if got, want := r.RecoveryToolIndex(), "read_notes, terminal_execute(command)"; got != want {
+		t.Fatalf("recovery tool index = %q, want %q", got, want)
+	}
+}

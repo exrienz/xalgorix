@@ -842,7 +842,7 @@ func provenUnreportedHypothesesForOwner(l *scanctx.LedgerStore, owner, contextID
 	reported := reportedFindingIDs(contextID)
 	var out []string
 	for _, h := range l.All() {
-		if h.Status != scanctx.HypothesisProven || !hypothesisBelongsToOwner(h, owner) {
+		if h.Status != scanctx.HypothesisProven || !hypothesisBelongsToOwner(h, owner) || discoveryOnlyHypothesis(h) {
 			continue
 		}
 		linked := false
@@ -858,6 +858,24 @@ func provenUnreportedHypothesesForOwner(l *scanctx.LedgerStore, owner, contextID
 	}
 	sort.Strings(out)
 	return out
+}
+
+// A completed discovery lane can surface useful routes or configuration
+// observations without proving a reportable vulnerability. A concrete mail
+// exploit still requires a finding, even when it came from a broad plan task.
+func discoveryOnlyHypothesis(h scanctx.Hypothesis) bool {
+	for _, ev := range h.Evidence {
+		if ev.Kind == "exploit" || strings.TrimSpace(ev.FindingID) != "" {
+			return false
+		}
+	}
+	switch h.VulnClass {
+	case "dirbusting", "parameter_mining", "cms-fingerprinting":
+		return true
+	case "email-security":
+		return (h.Origin == "auto-plan" || h.Origin == "auto-plan-surface") && h.Endpoint == ""
+	}
+	return false
 }
 
 // hypothesisBelongsToOwner filters shared-ledger finish work for a delegated

@@ -242,6 +242,8 @@ type ScanState struct {
 	LastToolArgsHash             string
 	ConsecutiveSameCall          int // same (tool, normalized args) called back-to-back
 	ConsecutiveSameCallNudges    int // consecutive repeat-call nudges without a different call
+	LastPlanArgsHash             string
+	ConsecutiveSamePlanUpdate    int // unchanged plan updates without a target action
 	LastResultFP                 string
 	ConsecutiveSameResult        int // same result-output fingerprint back-to-back
 	ConsecutiveSameResultNudges  int // consecutive repeat-result nudges without a different result
@@ -2007,6 +2009,21 @@ func resultFingerprint(output, errStr string) string {
 // Updates counters on ScanState — the actual nudge/force-skip is in hookStuckNudge.
 func hookStuckTracker(state *ScanState, args map[string]string) HookResult {
 	toolName := args["tool_name"]
+	if toolName == "update_plan" {
+		argsHash := hashToolArgs(toolName, args)
+		if argsHash == state.LastPlanArgsHash {
+			state.ConsecutiveSamePlanUpdate++
+		} else {
+			state.LastPlanArgsHash = argsHash
+			state.ConsecutiveSamePlanUpdate = 1
+		}
+		return HookResult{}
+	}
+	if isAdministrativeTool(toolName) {
+		return HookResult{}
+	}
+	state.ConsecutiveSamePlanUpdate = 0
+	state.LastPlanArgsHash = ""
 
 	switch toolName {
 	case "browser_action":
@@ -2047,38 +2064,45 @@ func hookStuckTracker(state *ScanState, args map[string]string) HookResult {
 		// the agent is re-issuing the *same* call (issue #158): a loop on
 		// terminal_execute with identical args never touches the browser
 		// counters above, so without this it runs until MaxIterations.
-		if toolName != "add_note" && toolName != "read_notes" {
-			state.ConsecutiveBrowser = 0
-			state.ConsecutiveSearch = 0
-			state.StuckIterations = 0
-			state.StuckDomain = ""
+		state.ConsecutiveBrowser = 0
+		state.ConsecutiveSearch = 0
+		state.StuckIterations = 0
+		state.StuckDomain = ""
 
-			// Repeated-call tracking. add_note/read_notes are excluded so
-			// legitimate note-taking between identical test calls doesn't
-			// itself count as a "different" call that resets the counter.
-			argsHash := hashToolArgs(toolName, args)
-			if toolName == state.LastToolName && argsHash == state.LastToolArgsHash {
-				state.ConsecutiveSameCall++
-			} else {
-				state.LastToolName = toolName
-				state.LastToolArgsHash = argsHash
-				state.ConsecutiveSameCall = 1
-				state.ConsecutiveSameCallNudges = 0
-			}
+		// Administrative calls are excluded so bookkeeping between identical
+		// test calls does not reset the repeated-call counter.
+		argsHash := hashToolArgs(toolName, args)
+		if toolName == state.LastToolName && argsHash == state.LastToolArgsHash {
+			state.ConsecutiveSameCall++
+		} else {
+			state.LastToolName = toolName
+			state.LastToolArgsHash = argsHash
+			state.ConsecutiveSameCall = 1
+			state.ConsecutiveSameCallNudges = 0
+		}
 
-			if toolName == "terminal_execute" {
-				if isTrivialCommand(args["command"]) {
-					state.ConsecutiveNoOpCalls++
-				} else {
-					state.ConsecutiveNoOpCalls = 0
-				}
+		if toolName == "terminal_execute" {
+			if isTrivialCommand(args["command"]) {
+				state.ConsecutiveNoOpCalls++
 			} else {
 				state.ConsecutiveNoOpCalls = 0
 			}
+		} else {
+			state.ConsecutiveNoOpCalls = 0
 		}
 	}
 
 	return HookResult{}
+}
+
+// Administrative results are bookkeeping, not target probes. They must not
+// advance or reset the repeated-probe counters.
+func isAdministrativeTool(name string) bool {
+	switch name {
+	case "add_note", "read_notes", "update_plan", "finish", "read_skill", "list_skills", "search_skills", "agentmail", "read_ledger", "record_hypothesis", "update_hypothesis", "add_hypothesis_evidence", "claim_next_hypothesis", "report_vulnerability":
+		return true
+	}
+	return false
 }
 
 func isTrivialCommand(cmd string) bool {
@@ -2104,8 +2128,7 @@ func isTrivialCommand(cmd string) bool {
 // not a "test result" and must not feed this counter.
 func hookResultRepeatTracker(state *ScanState, args map[string]string) HookResult {
 	toolName := args["tool_name"]
-	if toolName == "add_note" || toolName == "read_notes" || toolName == "finish" ||
-		toolName == "read_skill" || toolName == "list_skills" || toolName == "search_skills" || toolName == "agentmail" {
+	if isAdministrativeTool(toolName) {
 		return HookResult{}
 	}
 
@@ -2130,7 +2153,11 @@ func hookResultRepeatTracker(state *ScanState, args map[string]string) HookResul
 // Fires on OnStuckCheck. Produces soft nudge or hard force-skip based on
 // stuck counters accumulated by hookStuckTracker.
 func hookStuckNudge(state *ScanState, args map[string]string) HookResult {
-	if state.ReconOnlyMode {
+	if args["tool_name"] == "update_plan" && state.ConsecutiveSamePlanUpdate >= 3 {
+		state.ConsecutiveSamePlanUpdate = 0
+		return HookResult{ForceSkip: true, Nudge: "The plan update is unchanged and has already succeeded. Stop repeating it; run a concrete target probe or move to a different unfinished task."}
+	}
+	if state.ReconOnlyMode || isAdministrativeTool(args["tool_name"]) {
 		return HookResult{}
 	}
 

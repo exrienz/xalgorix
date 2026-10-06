@@ -418,6 +418,35 @@ func (r *Registry) SchemaXML() string {
 	return out
 }
 
+// RecoveryToolIndex is a compact reminder of documented tool names and their
+// required parameters. It uses the same role-scoped visibility as SchemaXML.
+func (r *Registry) RecoveryToolIndex() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		if !r.schemaHidden[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	entries := make([]string, 0, len(names))
+	for _, name := range names {
+		var required []string
+		for _, p := range r.tools[name].Parameters {
+			if p.Required {
+				required = append(required, p.Name)
+			}
+		}
+		if len(required) == 0 {
+			entries = append(entries, name)
+		} else {
+			entries = append(entries, name+"("+strings.Join(required, ",")+")")
+		}
+	}
+	return strings.Join(entries, ", ")
+}
+
 // SetSchemaHidden withholds the given tool names from SchemaXML output while
 // keeping them fully registered and executable. nil/empty clears the scope.
 func (r *Registry) SetSchemaHidden(names []string) {

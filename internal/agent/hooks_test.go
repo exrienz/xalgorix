@@ -1505,6 +1505,37 @@ func TestRepeatDetector_ResultTrackerIgnoresNotesAndFinish(t *testing.T) {
 	}
 }
 
+func TestRepeatDetector_PlanUpdatesDoNotConsumeProbeBudget(t *testing.T) {
+	state := NewScanState()
+	plan := map[string]string{"tool_name": "update_plan", "task_id": "recon", "status": "in_progress"}
+	nudges := 0
+	for range 32 {
+		hookStuckTracker(state, plan)
+		hookResultRepeatTracker(state, map[string]string{"tool_name": "update_plan", "output": "plan updated"})
+		if nudge := hookStuckNudge(state, plan); nudge.StopReason != "" {
+			t.Fatalf("plan bookkeeping must not terminate a scan: %+v", nudge)
+		} else if nudge.ForceSkip {
+			nudges++
+		}
+	}
+	if nudges == 0 {
+		t.Fatal("unchanged plan updates should trigger a bounded pivot nudge")
+	}
+	if state.ConsecutiveSameCall != 0 || state.ConsecutiveSameResult != 0 {
+		t.Fatalf("plan bookkeeping advanced probe counters: calls=%d results=%d", state.ConsecutiveSameCall, state.ConsecutiveSameResult)
+	}
+	probe := map[string]string{"tool_name": "terminal_execute", "command": "curl https://example.com/a"}
+	hookStuckTracker(state, probe)
+	hookResultRepeatTracker(state, map[string]string{"tool_name": "terminal_execute", "output": "same response"})
+	hookStuckTracker(state, plan)
+	hookResultRepeatTracker(state, map[string]string{"tool_name": "update_plan", "output": "plan updated"})
+	hookStuckTracker(state, probe)
+	hookResultRepeatTracker(state, map[string]string{"tool_name": "terminal_execute", "output": "same response"})
+	if state.ConsecutiveSameCall != 2 || state.ConsecutiveSameResult != 2 {
+		t.Fatalf("real repeated probes must still be counted across bookkeeping: calls=%d results=%d", state.ConsecutiveSameCall, state.ConsecutiveSameResult)
+	}
+}
+
 func TestRepeatDetector_ResetOnSuccessLeavesRepeatCounters(t *testing.T) {
 	state := NewScanState()
 	state.ConsecutiveSameCall = 3

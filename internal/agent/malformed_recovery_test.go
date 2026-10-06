@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/xalgord/xalgorix/v4/internal/tools"
 )
 
 // malformed_recovery_test.go — regression coverage for the malformed
@@ -26,6 +28,30 @@ func TestProtocolResetNoteExampleUsesKeyAndValue(t *testing.T) {
 	}
 	if !strings.Contains(res.Nudge, "<parameter=key>") || !strings.Contains(res.Nudge, "<parameter=value>") {
 		t.Fatal("the reset example must use add_note's real key/value parameters")
+	}
+}
+
+func TestProtocolResetRestoresRealToolNames(t *testing.T) {
+	r := tools.NewRegistry()
+	r.Register(&tools.Tool{Name: "add_note", Parameters: []tools.Parameter{{Name: "key", Required: true}, {Name: "value", Required: true}}})
+	r.Register(&tools.Tool{Name: "terminal_execute", Parameters: []tools.Parameter{{Name: "command", Required: true}}})
+	r.Register(&tools.Tool{Name: "read_notes"})
+	r.Register(&tools.Tool{Name: "read_ledger"})
+	r.Register(&tools.Tool{Name: "hidden_tool"})
+	r.SetSchemaHidden([]string{"hidden_tool"})
+	a := &Agent{registry: r}
+	nudge := a.protocolResetNudge("reset")
+	for _, want := range []string{"add_note(key,value)", "terminal_execute(command)", "read_notes", "read_ledger"} {
+		if !strings.Contains(nudge, want) {
+			t.Fatalf("reset nudge missing registered tool %q: %s", want, nudge)
+		}
+	}
+	if strings.Contains(nudge, "hidden_tool") {
+		t.Fatal("reset nudge exposed a role-hidden tool")
+	}
+	unknown := a.unknownToolRecoveryError("unknown tool: run_command")
+	if !strings.Contains(unknown, "terminal_execute(command)") || strings.Contains(unknown, "hidden_tool") {
+		t.Fatalf("unknown-tool error did not recover the visible catalog: %s", unknown)
 	}
 }
 
