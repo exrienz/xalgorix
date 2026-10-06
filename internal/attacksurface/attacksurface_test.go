@@ -271,8 +271,8 @@ func TestParseAPK(t *testing.T) {
 }
 
 func TestParseBytes_UnknownReturnsNil(t *testing.T) {
-	if ParseBytes([]byte("just some text"), "notes.txt") != nil {
-		t.Fatal("unknown content should return nil")
+	if ParseBytes([]byte("just some text"), "unknown.dat") != nil {
+		t.Fatal("unknown format should return nil")
 	}
 	if ParseBytes([]byte(""), "empty") != nil {
 		t.Fatal("empty content should return nil")
@@ -300,15 +300,29 @@ func TestParseBytes_EndpointList(t *testing.T) {
 	}
 }
 
-func TestParseBytes_EndpointListRejectsProseAndUnsafeURLs(t *testing.T) {
+func TestParseBytes_TextContextDoesNotInventEndpoints(t *testing.T) {
 	for _, input := range []string{
 		"Scanner notes reference https://example.com/api/users, but no routes are listed.",
 		"GET /valid\nThis is explanatory prose.",
 		"https://user:password@example.com/private",
 	} {
-		if res := ParseBytes([]byte(input), "notes.txt"); res != nil {
-			t.Fatalf("unexpected parsed endpoint from %q: %+v", input, res)
+		res := ParseBytes([]byte(input), "notes.txt")
+		if res == nil || len(res.Endpoints) != 0 || len(res.AuthHeaders) != 0 || len(res.TextContext) != 1 {
+			t.Fatalf("prose must be reference material, not parsed routes: %+v", res)
 		}
+	}
+}
+
+func TestParseBytes_TextContextBriefingAndCRLineEndings(t *testing.T) {
+	res := ParseBytes([]byte("Scope and workflow\rThe API is at https://example.com/api.\rTest authenticated flows."), "research.txt")
+	if res == nil || len(res.Endpoints) != 0 || !strings.Contains(res.Briefing(), "Scope and workflow\nThe API") {
+		t.Fatalf("CR-delimited research brief was lost: %+v", res)
+	}
+	if got := ParseBytes([]byte("GET /one\rPOST /two"), "routes.txt"); got == nil || len(got.Endpoints) != 2 {
+		t.Fatalf("CR-delimited endpoint list was not parsed: %+v", got)
+	}
+	if got := ParseBytes([]byte("notes\x00binary"), "notes.txt"); got != nil {
+		t.Fatalf("binary text should be rejected: %+v", got)
 	}
 }
 

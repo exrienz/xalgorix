@@ -5,6 +5,7 @@
 package httpclient
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -46,6 +47,36 @@ func Register(r *tools.Registry) {
 
 func execute(args map[string]string) (tools.Result, error) {
 	return executeWithContext("", args)
+}
+
+// ProbeTarget makes a bounded, read-only availability request using the same
+// proxy, TLS, attribution headers, and scan session as ordinary HTTP tools.
+// It returns only the HTTP status; response content is never added to the
+// agent conversation.
+func ProbeTarget(ctx context.Context, contextID, targetURL string) (int, error) {
+	targetURL = strings.TrimSpace(targetURL)
+	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+		targetURL = "https://" + targetURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	for name, val := range getSessionAuth(contextID) {
+		req.Header.Set(name, val)
+	}
+	scanheaders.Apply(req.Header, config.Get().ScanHeaders)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	client, err := buildClient(5, false, config.Get().TLSSkipVerify)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 func executeWithContext(contextID string, args map[string]string) (tools.Result, error) {

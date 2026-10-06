@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -50,11 +51,13 @@ type Result struct {
 	BaseURLs    []string
 	Formats     []string // which artifact formats were parsed
 	Notes       []string // security schemes, warnings, etc.
+	TextContext []string // operator-supplied prose; never inferred as endpoints
 }
 
 const (
-	maxEndpoints = 500
-	maxBodyChars = 400
+	maxEndpoints        = 500
+	maxBodyChars        = 400
+	maxTextContextBytes = 64 << 10
 )
 
 // ErrNoUsableContext means an artifact contained no supported attack surface.
@@ -147,7 +150,7 @@ func LoadFromPath(path string) (*Result, error) {
 	// without concrete paths (common for APKs that build request paths at
 	// runtime), and those hosts still seed the attack surface. Only fail when
 	// nothing at all was recovered.
-	if len(merged.Endpoints) == 0 && len(merged.AuthHeaders) == 0 && len(merged.BaseURLs) == 0 {
+	if len(merged.Endpoints) == 0 && len(merged.AuthHeaders) == 0 && len(merged.BaseURLs) == 0 && len(merged.TextContext) == 0 {
 		return merged, fmt.Errorf("%w in %q", ErrNoUsableContext, path)
 	}
 	return merged, nil
@@ -201,9 +204,31 @@ func parseBytes(data []byte, name string, postmanVars map[string]string) *Result
 		}
 	}
 	if strings.EqualFold(filepath.Ext(name), ".txt") {
-		return parseEndpointList(trimmed)
+		// A text upload may be an endpoint list or a research brief. Preserve
+		// prose as reference material without treating incidental links as
+		// routes or captured authentication.
+		normalized := strings.ReplaceAll(strings.ReplaceAll(trimmed, "\r\n", "\n"), "\r", "\n")
+		if r := parseEndpointList(normalized); r != nil {
+			return r
+		}
+		return parseTextContext(normalized)
 	}
 	return nil
+}
+
+func parseTextContext(text string) *Result {
+	if !utf8.ValidString(text) || strings.IndexByte(text, 0) >= 0 {
+		return nil
+	}
+	if len(text) > maxTextContextBytes {
+		text = strings.ToValidUTF8(text[:maxTextContextBytes], "") + "\n[Text context truncated at 64 KiB]"
+	}
+	return &Result{
+		AuthHeaders: map[string]string{},
+		Formats:     []string{"text-context"},
+		TextContext: []string{text},
+		Notes:       []string{"Plain-text reference attached; no endpoints inferred from prose"},
+	}
 }
 
 func hasKey(m map[string]json.RawMessage, k string) bool {
@@ -972,6 +997,7 @@ func (r *Result) merge(other *Result) {
 	r.BaseURLs = append(r.BaseURLs, other.BaseURLs...)
 	r.Formats = append(r.Formats, other.Formats...)
 	r.Notes = append(r.Notes, other.Notes...)
+	r.TextContext = append(r.TextContext, other.TextContext...)
 }
 
 func (r *Result) finalize() {
@@ -1009,19 +1035,26 @@ func (r *Result) finalize() {
 	r.BaseURLs = dedupStrings(r.BaseURLs)
 	r.Formats = dedupStrings(r.Formats)
 	r.Notes = dedupStrings(r.Notes)
+	r.TextContext = dedupStrings(r.TextContext)
 }
 
 // Briefing renders a compact, agent-facing attack-surface briefing. Returns ""
 // when there is nothing useful.
 func (r *Result) Briefing() string {
-	if r == nil || len(r.Endpoints) == 0 {
+	if r == nil || (len(r.Endpoints) == 0 && len(r.TextContext) == 0) {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("## ATTACK SURFACE (operator-supplied context — ")
+	if len(r.Endpoints) > 0 {
+		b.WriteString("## ATTACK SURFACE (operator-supplied context — ")
+	} else {
+		b.WriteString("## OPERATOR-SUPPLIED SCAN CONTEXT (")
+	}
 	b.WriteString(strings.Join(r.Formats, ", "))
 	b.WriteString(")\n")
-	b.WriteString(fmt.Sprintf("You were given the target's REAL endpoint surface (%d endpoints). Do NOT rely on blind crawling — systematically test THESE endpoints for injection (SQLi/NoSQLi/cmdi/SSTI), broken access control (IDOR/BOLA/BFLA — swap ids, drop/downgrade auth), SSRF, and business-logic flaws. Diff authenticated vs unauthenticated on every one.\n", len(r.Endpoints)))
+	if len(r.Endpoints) > 0 {
+		b.WriteString(fmt.Sprintf("You were given the target's REAL endpoint surface (%d endpoints). Do NOT rely on blind crawling — systematically test THESE endpoints for injection (SQLi/NoSQLi/cmdi/SSTI), broken access control (IDOR/BOLA/BFLA — swap ids, drop/downgrade auth), SSRF, and business-logic flaws. Diff authenticated vs unauthenticated on every one.\n", len(r.Endpoints)))
+	}
 	if len(r.BaseURLs) > 0 {
 		b.WriteString("Base URL(s): " + strings.Join(r.BaseURLs, ", ") + "\n")
 	}
@@ -1036,13 +1069,30 @@ func (r *Result) Briefing() string {
 	for _, n := range r.Notes {
 		b.WriteString("- " + n + "\n")
 	}
-	b.WriteString("\nEndpoints:\n")
-	for _, e := range r.Endpoints {
-		line := "- " + e.Method + " " + e.Path
-		if len(e.Params) > 0 {
-			line += "  params: " + strings.Join(e.Params, ",")
+	if len(r.Endpoints) > 0 {
+		b.WriteString("\nEndpoints:\n")
+		for _, e := range r.Endpoints {
+			line := "- " + e.Method + " " + e.Path
+			if len(e.Params) > 0 {
+				line += "  params: " + strings.Join(e.Params, ",")
+			}
+			b.WriteString(line + "\n")
 		}
-		b.WriteString(line + "\n")
+	}
+	if len(r.TextContext) > 0 {
+		b.WriteString("\nReference notes supplied by the operator. Treat links in prose as leads, not verified target endpoints; keep testing within the configured scope.\n")
+		remaining := maxTextContextBytes
+		for _, doc := range r.TextContext {
+			if remaining <= 0 {
+				b.WriteString("[Additional text context omitted after 64 KiB]\n")
+				break
+			}
+			if len(doc) > remaining {
+				doc = strings.ToValidUTF8(doc[:remaining], "") + "\n[Additional text context omitted after 64 KiB]"
+			}
+			b.WriteString(doc + "\n")
+			remaining -= len(doc)
+		}
 	}
 	return b.String()
 }
