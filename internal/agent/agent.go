@@ -176,6 +176,25 @@ type toolExecResult struct {
 	Err    error
 }
 
+func (a *Agent) protocolResetNudge(nudge string) string {
+	if a.registry == nil {
+		return nudge
+	}
+	index := a.registry.RecoveryToolIndex()
+	if index == "" {
+		return nudge
+	}
+	return nudge + "\n\nRegistered tools (required parameters in parentheses): " + index +
+		"\nAfter the reset note, call read_notes and read_ledger to recover saved progress. Use terminal_execute(command) for shell commands; do not invent tool names."
+}
+
+func (a *Agent) unknownToolRecoveryError(toolError string) string {
+	if !strings.HasPrefix(toolError, "unknown tool: ") || a.registry == nil {
+		return toolError
+	}
+	return toolError + "\nRegistered tools (required parameters in parentheses): " + a.registry.RecoveryToolIndex()
+}
+
 // Agent runs the LLM agent loop.
 type Agent struct {
 	ID                         string
@@ -2192,11 +2211,12 @@ func (a *Agent) Run(targets []string, instruction string) {
 				// provider control-token leaks, or few-shot-mimicking its own
 				// malformed turns) is the CAUSE of the corruption — nudging
 				// into the same context just produces more of the same.
+				resetNudge := a.protocolResetNudge(noToolResult.Nudge)
 				a.msgMu.Lock()
 				if len(a.messages) > 0 && a.messages[0].Role == "system" {
-					a.messages = append(a.messages[:0:1], llm.Message{Role: "user", Content: noToolResult.Nudge})
+					a.messages = append(a.messages[:0:1], llm.Message{Role: "user", Content: resetNudge})
 				} else {
-					a.messages = []llm.Message{{Role: "user", Content: noToolResult.Nudge}}
+					a.messages = []llm.Message{{Role: "user", Content: resetNudge}}
 				}
 				a.msgMu.Unlock()
 				a.emit(Event{Type: "recovery", Content: "Context hard-reset: truncated conversation to system prompt + protocol recovery instruction.", TotalTokens: tokenCount()})
@@ -2362,6 +2382,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 			if err != nil {
 				result = tools.Result{Error: err.Error()}
 			}
+			result.Error = a.unknownToolRecoveryError(result.Error)
 
 			a.emit(Event{
 				Type:        "tool_result",

@@ -258,6 +258,36 @@ func TestProvenUnreportedHypotheses(t *testing.T) {
 	}
 }
 
+func TestProvenDiscoveryWorkDoesNotRequireFinding(t *testing.T) {
+	ctx, state := newTestCtxState(t)
+	var contentID string
+	for _, class := range []string{"dirbusting", "parameter_mining", "cms-fingerprinting"} {
+		h := ctx.Ledger.Upsert(scanctx.Hypothesis{VulnClass: class, Endpoint: "/survey", Origin: "auto-plan-surface"})
+		ctx.Ledger.SetStatus(h.ID, scanctx.HypothesisProven, "routes recorded")
+		if class == "dirbusting" {
+			contentID = h.ID
+		}
+	}
+	mail := ctx.Ledger.Upsert(scanctx.Hypothesis{VulnClass: "email-security", Origin: "auto-plan"})
+	ctx.Ledger.SetStatus(mail.ID, scanctx.HypothesisProven, "DNS configuration observed")
+	ctx.Ledger.AddEvidence(mail.ID, scanctx.Evidence{Kind: "probe", Summary: "DNS records observed"})
+	if got := provenUnreportedHypothesesForOwner(ctx.Ledger, "", state.ScanContextID); len(got) != 0 {
+		t.Fatalf("discovery observations should not demand vulnerability reports: %v", got)
+	}
+	if gate := hookLedgerFinishGate(state, nil); gate.Block {
+		t.Fatalf("discovery observations should not block finish: %+v", gate)
+	}
+
+	ctx.Ledger.AddEvidence(mail.ID, scanctx.Evidence{Kind: "exploit", Summary: "reproducible impact"})
+	if got := provenUnreportedHypothesesForOwner(ctx.Ledger, "", state.ScanContextID); len(got) != 1 || got[0] != mail.ID {
+		t.Fatalf("a concrete mail vulnerability must still require a report: %v", got)
+	}
+	ctx.Ledger.AddEvidence(contentID, scanctx.Evidence{Kind: "exploit", Summary: "sensitive content exposed"})
+	if got := provenUnreportedHypothesesForOwner(ctx.Ledger, "", state.ScanContextID); len(got) != 2 {
+		t.Fatalf("an exploited discovery lead must still require a report: %v", got)
+	}
+}
+
 func TestHookLedgerFinishGate(t *testing.T) {
 	ctx, state := newTestCtxState(t)
 	state.FinishAttempts = 1
