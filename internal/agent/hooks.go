@@ -2390,8 +2390,26 @@ var localOnlyTools = map[string]bool{
 	"ingest_har": true, "agentmail": true,
 }
 
+var targetNetworkCommandPattern = regexp.MustCompile(`(?i)\b(?:curl|wget|httpx|nmap|ffuf|nuclei|nikto|sqlmap|dig|nslookup|ping)\b|\b(?:requests\.|urllib\.|aiohttp\.|http\.client|fetch\()`)
+
+func targetHealthNetworkCall(args map[string]string) bool {
+	switch strings.TrimSpace(args["tool_name"]) {
+	case "terminal_execute", "python_action":
+		command := strings.TrimSpace(args["command"])
+		if command == "" {
+			command = strings.TrimSpace(args["code"])
+		}
+		// A missing command is possible in synthetic tool results; the
+		// terminal caller normally supplies one. Local file inspection must
+		// not extend a target-outage streak based on quoted status text.
+		return command == "" || targetNetworkCommandPattern.MatchString(command)
+	default:
+		return true
+	}
+}
+
 func hookTargetHealthDetector(state *ScanState, args map[string]string) HookResult {
-	if localOnlyTools[strings.TrimSpace(args["tool_name"])] {
+	if localOnlyTools[strings.TrimSpace(args["tool_name"])] || !targetHealthNetworkCall(args) {
 		return HookResult{}
 	}
 	output := strings.ToLower(args["output"])
@@ -2453,10 +2471,8 @@ func hookTargetHealthDetector(state *ScanState, args map[string]string) HookResu
 			}
 			if state.ConsecutiveTargetErrors == 3 {
 				return HookResult{
-					Nudge: `⚠️ TARGET UNREACHABLE / DOWN ALERT: The target stopped responding across 3 consecutive calls (connection refused / timeout / gateway errors such as "502 Bad Gateway" or "503 Service Unavailable — No server is available to handle this request").
-Verify whether the target application went offline, its backend is down behind the load balancer, or your client IP was banned by a firewall.
-If the host stays unreachable, document what was tested in notes (add_note) and finish the scan gracefully — the engine ends the scan automatically if the target stays unresponsive.`,
-					EmitMessage: "⚠️ TARGET OFFLINE, GATEWAY-DOWN, OR IP BANNED: Target stopped responding across 3 consecutive requests.",
+					Nudge:       `⚠️ TARGET NETWORK FAILURE ALERT: Three target-facing calls returned connection, timeout, or gateway errors. Check whether the affected host is available and whether other in-scope routes still respond. Continue testing reachable hosts; record blocked work accurately if an affected host stays unavailable.`,
+					EmitMessage: "⚠️ Target network failures observed across 3 requests; availability will be checked before any automatic stop.",
 				}
 			}
 			if state.ConsecutiveTargetErrors > 3 && state.ConsecutiveTargetErrors%5 == 0 {

@@ -2393,6 +2393,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 					resultArgs["skill_duplicate"] = "true"
 				}
 			}
+			previousTargetErrors := a.state.ConsecutiveTargetErrors
 			toolResultHook := a.hooks.Fire(OnToolResult, a.state, resultArgs)
 			if !a.checkpointOrStop() {
 				return
@@ -2410,32 +2411,34 @@ func (a *Agent) Run(targets []string, instruction string) {
 			}
 
 			// ── Sustained target-unresponsive breaker ──
-			// The health hook stamps state.TargetUnresponsiveSince at the
-			// first failure of a consecutive streak and clears it on any
-			// healthy response. A target that stayed unreachable or down
-			// behind its load balancer for the whole window will not recover
-			// by scanning harder; continuing only burns LLM and scan budget
-			// (observed: scans probing a dead target for 21–32 hours). End
-			// the scan with a typed finish reason so the UI shows WHY it
-			// stopped instead of an endless "running" scan.
+			// A stale failure streak alone cannot cancel a scan. Recheck the
+			// configured targets after a fresh network failure; only a
+			// corroborated outage may stop all agents.
 			if !a.state.TargetUnresponsiveSince.IsZero() &&
 				time.Since(a.state.TargetUnresponsiveSince) > targetUnresponsiveKillThreshold &&
-				a.state.ConsecutiveTargetErrors >= 3 {
-				downFor := time.Since(a.state.TargetUnresponsiveSince).Round(time.Minute)
-				detail := fmt.Sprintf(
-					"Agent stopped before clean completion: the target was unreachable or returning gateway failures (connection refused / timeout / 502 / 503 / 504) continuously for %s across %d consecutive failed requests. Existing findings are preserved; re-run the scan once the target recovers.",
-					downFor, a.state.ConsecutiveTargetErrors)
-				a.emit(Event{Type: "error", Content: "⛔ TARGET UNRESPONSIVE: " + detail, TotalTokens: tokenCount()})
-				safe.IncWatchdogKill()
-				log.Printf("[watchdog] WARN kill scan=%s down_for=%s consecutive_failures=%d reason=target_unresponsive",
-					a.scanCtx.ID, downFor, a.state.ConsecutiveTargetErrors)
-				a.stopped.Store(true)
-				if a.cancel != nil {
-					a.cancel()
+				a.state.ConsecutiveTargetErrors >= 3 &&
+				a.state.ConsecutiveTargetErrors > previousTargetErrors {
+				if !a.confirmTargetUnresponsive() {
+					a.state.ConsecutiveTargetErrors = 0
+					a.state.TargetUnresponsiveSince = time.Time{}
+					a.emit(Event{Type: "message", Content: "Target outage was not confirmed; scan continues on available routes.", TotalTokens: tokenCount()})
+				} else {
+					downFor := time.Since(a.state.TargetUnresponsiveSince).Round(time.Minute)
+					detail := fmt.Sprintf(
+						"Agent stopped before clean completion: the target was unreachable or returning gateway failures (connection refused / timeout / 502 / 503 / 504) continuously for %s across %d consecutive failed requests. Existing findings are preserved; re-run the scan once the target recovers.",
+						downFor, a.state.ConsecutiveTargetErrors)
+					a.emit(Event{Type: "error", Content: "⛔ TARGET UNRESPONSIVE: " + detail, TotalTokens: tokenCount()})
+					safe.IncWatchdogKill()
+					log.Printf("[watchdog] WARN kill scan=%s down_for=%s consecutive_failures=%d reason=target_unresponsive",
+						a.scanCtx.ID, downFor, a.state.ConsecutiveTargetErrors)
+					a.stopped.Store(true)
+					if a.cancel != nil {
+						a.cancel()
+					}
+					a.scanCtx.Terminal.KillAll()
+					a.emit(Event{Type: "finished", Content: detail, TotalTokens: tokenCount(), Aborted: true, AbortReason: "target_unresponsive"})
+					return
 				}
-				a.scanCtx.Terminal.KillAll()
-				a.emit(Event{Type: "finished", Content: detail, TotalTokens: tokenCount(), Aborted: true, AbortReason: "target_unresponsive"})
-				return
 			}
 
 			// ── Hook: OnFinishAttempt ──

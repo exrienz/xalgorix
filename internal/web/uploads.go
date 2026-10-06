@@ -156,9 +156,9 @@ func (s *Server) handleUploadLogo(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUploadContext accepts one or more scan-context artifacts (OpenAPI/
-// Swagger spec, HAR capture, Postman collection + environment, Burp export, or
-// an Android app) and saves them into a per-upload directory under the data
-// dir. It returns that directory path, which the caller passes back as
+// Swagger spec, HAR capture, Postman collection + environment, Burp export,
+// Android app, or plain-text notes) and saves them into a per-upload directory
+// under the data dir. It returns that directory path, which the caller passes back as
 // ScanRequest.scan_context; the engine parses every file in it and merges them
 // into a seeded attack surface at scan start — resolving Postman {{variables}}
 // and captured auth across the collection and its environment.
@@ -198,7 +198,7 @@ func (s *Server) handleUploadContext(w http.ResponseWriter, r *http.Request) {
 	for _, fh := range files {
 		ext := strings.ToLower(filepath.Ext(filepath.Base(fh.Filename)))
 		if !allowedExts[ext] {
-			http.Error(w, "unsupported context format: "+ext+" (allowed: json, yaml, yml, har, xml, apk, apks, xapk, aab, txt — OpenAPI/Swagger, HAR, Postman, Burp, or an Android app)", http.StatusBadRequest)
+			http.Error(w, "unsupported context format: "+ext+" (allowed: json, yaml, yml, har, xml, apk, apks, xapk, aab, txt — OpenAPI/Swagger, HAR, Postman, Burp, Android app, or plain-text notes)", http.StatusBadRequest)
 			return
 		}
 	}
@@ -266,7 +266,7 @@ func (s *Server) handleUploadContext(w http.ResponseWriter, r *http.Request) {
 	if perr != nil {
 		_ = os.RemoveAll(uploadDir)
 		if errors.Is(perr, attacksurface.ErrNoUsableContext) {
-			http.Error(w, "could not parse context: no usable endpoints, auth, or base URL found; for .txt use one URL or METHOD /path per line", http.StatusBadRequest)
+			http.Error(w, "could not parse context: no usable endpoints, auth, base URL, or readable text found", http.StatusBadRequest)
 			return
 		}
 		http.Error(w, "could not parse context: invalid or unreadable artifact", http.StatusBadRequest)

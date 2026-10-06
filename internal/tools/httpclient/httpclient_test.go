@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,6 +26,22 @@ func TestValidMethod(t *testing.T) {
 		if validMethod(m) {
 			t.Errorf("validMethod(%q) = true, want false", m)
 		}
+	}
+}
+
+func TestProbeTargetReturnsStatusWithoutFollowingRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/ok", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("available"))
+	}))
+	defer srv.Close()
+	status, err := ProbeTarget(context.Background(), "", srv.URL+"/redirect")
+	if err != nil || status != http.StatusFound {
+		t.Fatalf("ProbeTarget redirect status = %d, %v", status, err)
 	}
 }
 

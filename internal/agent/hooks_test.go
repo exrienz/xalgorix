@@ -2143,6 +2143,32 @@ func TestHookTargetHealthDetectorIgnoresLocalOnlyTools(t *testing.T) {
 	}
 }
 
+func TestHookTargetHealthDetectorIgnoresLocalTerminalOutput(t *testing.T) {
+	state := NewScanState()
+	for _, result := range []string{
+		"HTTP/1.1 502 Bad Gateway in a saved log",
+		"connection refused in an archived note",
+		"HTTP/1.1 503 Service Unavailable in a local source file",
+	} {
+		hookTargetHealthDetector(state, map[string]string{
+			"tool_name": "terminal_execute",
+			"command":   "python3 -c 'import json; print(json.load(open(\"execution.json\")))'",
+			"output":    result,
+		})
+	}
+	if state.ConsecutiveTargetErrors != 0 || !state.TargetUnresponsiveSince.IsZero() {
+		t.Fatalf("local inspection must not mark target down: %+v", state)
+	}
+	hookTargetHealthDetector(state, map[string]string{
+		"tool_name": "terminal_execute",
+		"command":   "curl -s https://example.test",
+		"output":    "HTTP/1.1 502 Bad Gateway",
+	})
+	if state.ConsecutiveTargetErrors != 1 {
+		t.Fatalf("target-facing failure must still count: %d", state.ConsecutiveTargetErrors)
+	}
+}
+
 func TestHookTargetHealthDetectorBareStatusCodeShapes(t *testing.T) {
 	state := NewScanState()
 	hookTargetHealthDetector(state, map[string]string{
