@@ -129,6 +129,13 @@ var (
 	// reporting a clean completion. These expressions are intentionally narrow:
 	// ordinary prose mentioning "tool call" is not classified as malformed.
 	providerControlTokenRe = regexp.MustCompile(`(?i)<\]\s*minimax\s*\[>`)
+	// Redaction counterpart of providerControlTokenRe for DISPLAY and HISTORY
+	// surfaces: strips any provider's internal channel delimiters (identifier
+	// wrapped in `<]`…`[>`, with optionally abutting flanking brackets) from
+	// model-emitted prose. The classification regex above stays deliberately
+	// narrow; this one is generic so emitted text can never carry a provider's
+	// internal control tokens into UIs, reports, or persisted history.
+	providerControlStripRe = regexp.MustCompile(`(?i)\]?<\]\s*[A-Za-z0-9_.-]+\s*\[>\[?`)
 	bareToolCallTagRe      = regexp.MustCompile(`(?is)</?tool_calls?\b[^>]*>`)
 	toolXMLResidueRe       = regexp.MustCompile(`(?is)</?function(?:\s*=|\b)|<parameter(?:\s*=|\s+)|</parameter>`)
 )
@@ -149,6 +156,18 @@ func MalformedToolOutputReason(content string) string {
 		return "malformed_tool_xml"
 	}
 	return ""
+}
+
+// StripProviderControlTokens redacts internal provider control delimiters
+// (see providerControlStripRe) from model-emitted text. Applied to every event
+// surface and to display/history copies of model prose so provider protocol
+// residue never reaches clients or gets persisted. Cheap Contains gate first:
+// most event text never contains the artifact and skips the regex entirely.
+func StripProviderControlTokens(content string) string {
+	if !strings.Contains(content, "<]") {
+		return content
+	}
+	return providerControlStripRe.ReplaceAllString(content, "")
 }
 
 // ParseToolCalls extracts tool calls from LLM XML output.
@@ -444,6 +463,7 @@ var (
 // Used when persisting a turn whose tool calls were parsed/recovered, so the
 // model never sees its own malformed tool-call fragments and mimic them.
 func StripToolResidue(content string) string {
+	content = StripProviderControlTokens(content)
 	content = toolPattern.ReplaceAllString(content, "")
 	content = orphanParamResidueRe.ReplaceAllString(content, "")
 	content = strayFuncTagRe.ReplaceAllString(content, "")
@@ -461,6 +481,7 @@ func CleanContent(content string) string {
 	cleaned = incompleteFunc.ReplaceAllString(cleaned, "")
 	cleaned = interAgentRe.ReplaceAllString(cleaned, "")
 	cleaned = agentReportRe.ReplaceAllString(cleaned, "")
+	cleaned = StripProviderControlTokens(cleaned)
 	cleaned = multiBlankRe.ReplaceAllString(cleaned, "\n\n")
 
 	return strings.TrimSpace(cleaned)

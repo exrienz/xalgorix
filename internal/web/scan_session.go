@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/xalgord/xalgorix/v4/internal/agent"
+	"github.com/xalgord/xalgorix/v4/internal/llm"
 	"github.com/xalgord/xalgorix/v4/internal/scanctx"
 	"github.com/xalgord/xalgorix/v4/internal/scopeguard"
 	"github.com/xalgord/xalgorix/v4/internal/tools/notes"
@@ -583,9 +584,15 @@ func (r *ScanRecord) markPhaseWorked(phase int) {
 }
 
 func (s *Server) processEvent(evt agent.Event, sess *scanSession) {
+	// Redact provider-internal control tokens from every event surface before
+	// the event is broadcast or persisted. A model occasionally leaks its
+	// transport's channel delimiters into prose; those artifacts must never
+	// reach clients or the persisted event history (they also poison the
+	// conversation when fed back to the model). Contains-gated, so clean text
+	// skips the regex entirely.
 	wsEvt := WSEvent{
 		Type:        evt.Type,
-		Content:     evt.Content,
+		Content:     llm.StripProviderControlTokens(evt.Content),
 		ToolName:    evt.ToolName,
 		ToolArgs:    evt.ToolArgs,
 		AgentID:     evt.AgentID,
@@ -603,8 +610,8 @@ func (s *Server) processEvent(evt agent.Event, sess *scanSession) {
 	}
 
 	if evt.Type == "tool_result" {
-		wsEvt.Output = evt.ToolResult.Output
-		wsEvt.Error = evt.ToolResult.Error
+		wsEvt.Output = llm.StripProviderControlTokens(evt.ToolResult.Output)
+		wsEvt.Error = llm.StripProviderControlTokens(evt.ToolResult.Error)
 		// Typed outcome provenance (duplicate / verifier_rejected / saved
 		// receipt ids): previously only output+error crossed the event schema,
 		// so rejected reports were indistinguishable from clean ones unless a
